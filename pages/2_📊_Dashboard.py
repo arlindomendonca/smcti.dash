@@ -93,7 +93,18 @@ with st.expander("🎛️ Filtros", expanded=True):
 
 
 # ── Carrega dados ────────────────────────────────────────────────────────────
-df = carregar_dados(str(dt_ini), str(dt_fim))
+try:
+    df = carregar_dados(str(dt_ini), str(dt_fim))
+except Exception as e:
+    st.error("❌ Falha ao carregar dados do Supabase")
+    st.code(str(e), language="text")
+    st.info(
+        "Verifique se:\n"
+        "1. A view `vw_atendimento_enriquecido` foi criada no Supabase\n"
+        "2. As credenciais (url e service_key) estão corretas nos secrets\n"
+        "3. A view está acessível (sem RLS bloqueando leitura)"
+    )
+    st.stop()
 
 if df.empty:
     st.warning("Nenhum atendimento encontrado no período selecionado.")

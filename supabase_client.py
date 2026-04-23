@@ -208,27 +208,35 @@ def get_atendimentos_enriquecidos(
     Lê a view vw_atendimento_enriquecido.
     Datas em formato 'YYYY-MM-DD' (filtro no campo started_at).
     """
-    params: dict = {"select": "*", "order": "started_at.desc"}
-    filtros = []
+    # PostgREST: para filtros de comparação, a chave é o nome da coluna
+    # e o valor começa com o operador: 'gte.2026-01-01'
+    base_params: dict = {
+        "select": "*",
+        "order":  "started_at.desc",
+    }
     if data_inicio:
-        filtros.append(f"started_at=gte.{data_inicio}T00:00:00")
+        base_params["started_at"] = f"gte.{data_inicio}"
     if data_fim:
-        filtros.append(f"started_at=lte.{data_fim}T23:59:59")
-    # PostgREST aceita múltiplos filtros como query-string separada
-    extra_qs = "&".join(filtros)
+        # Como não pode haver duas chaves 'started_at' em um dict,
+        # usamos 'and' para combinar filtros na mesma coluna
+        if data_inicio:
+            base_params.pop("started_at")
+            base_params["and"] = f"(started_at.gte.{data_inicio},started_at.lte.{data_fim}T23:59:59)"
+        else:
+            base_params["started_at"] = f"lte.{data_fim}T23:59:59"
 
-    url = f"{_sb_url()}/rest/v1/vw_atendimento_enriquecido?select=*&order=started_at.desc"
-    if extra_qs:
-        url = f"{url}&{extra_qs}"
+    url = f"{_sb_url()}/rest/v1/vw_atendimento_enriquecido"
 
     todos: list[dict] = []
     limit = 1000
     offset = 0
     while True:
-        paged_url = f"{url}&limit={limit}&offset={offset}"
-        r = requests.get(paged_url, headers=_read_headers(), timeout=30)
+        params = {**base_params, "limit": str(limit), "offset": str(offset)}
+        r = requests.get(url, headers=_read_headers(), params=params, timeout=30)
         if not r.ok:
-            raise Exception(f"Supabase view {r.status_code}: {r.text[:200]}")
+            raise Exception(
+                f"Supabase view {r.status_code}: {r.text[:400]} | URL={r.url}"
+            )
         rows = r.json()
         if not rows:
             break
