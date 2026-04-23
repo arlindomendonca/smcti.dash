@@ -88,119 +88,12 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
     Importa atendimentos em lotes de `tamanho_lote` para não travar em
     volumes grandes (ex: dias com 20.000+ atendimentos).
     """
-    import json as _json
-    from api_client import get_atendimentos as _dbg_get, _headers as _dbg_h, _base as _dbg_b, _build_params as _dbg_p
-    import requests as _req
-
     erros: list[str] = []
     total_importado = 0
 
-    # Normaliza IDs importados para int (evita mismatch de tipo)
+    # Normaliza IDs importados para int
     ids_importados_norm = {int(x) for x in ids_importados if x is not None}
 
-    # ── DIAGNÓSTICO INICIAL ────────────────────────────────────────────
-    diag = st.container(border=True)
-    with diag:
-        st.markdown("### 🔬 Diagnóstico da importação")
-
-        # 1) Contexto
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.metric("IDs no set", f"{len(ids_importados_norm):,}".replace(",", "."))
-            if ids_importados_norm:
-                amostra = sorted(ids_importados_norm, reverse=True)[:3]
-                st.caption(f"Maiores IDs no set: `{amostra}`")
-        with col_b:
-            st.metric("Tamanho do lote", tamanho_lote)
-            filtros_ativos = {k: str(v) for k, v in filtros.items() if v is not None}
-            st.caption(f"Filtros: {len(filtros_ativos)} campos")
-
-        st.markdown("**Filtros enviados à API:**")
-        st.json(filtros_ativos)
-
-        # 2) Teste da chamada real à API (primeira página)
-        st.markdown("---")
-        st.markdown("**Teste de chamada à API (página 1):**")
-
-        try:
-            params_teste = _dbg_p(page=1, **filtros)
-            url_base = f"{_dbg_b()}/chats"
-
-            # Constrói URL legível
-            from urllib.parse import urlencode
-            url_completa = f"{url_base}?{urlencode(params_teste)}"
-            st.code(url_completa, language="text")
-
-            with st.spinner("Consultando API…"):
-                resp = _req.get(url_base, headers=_dbg_h(), params=params_teste, timeout=30)
-
-            st.write(f"**Status HTTP:** `{resp.status_code}`")
-
-            if resp.status_code != 200:
-                st.error(f"API retornou erro: {resp.text[:500]}")
-                return 0, [f"API retornou HTTP {resp.status_code}"]
-
-            teste = resp.json()
-            meta_teste = teste.get("meta", {})
-            data_teste = teste.get("data", [])
-            links_teste = teste.get("links", {})
-
-            col_m1, col_m2, col_m3 = st.columns(3)
-            col_m1.metric("Itens página 1", len(data_teste))
-            col_m2.metric("per_page", meta_teste.get("per_page", "?"))
-            col_m3.metric("Tem next?", "Sim" if links_teste.get("next") else "Não")
-
-            st.markdown("**Meta completa da API:**")
-            st.json(meta_teste)
-
-            if not data_teste:
-                st.error("❌ API retornou lista VAZIA — os filtros não trouxeram nenhum registro.")
-                return 0, ["API retornou zero registros."]
-
-            # 3) Análise dos IDs retornados
-            st.markdown("---")
-            st.markdown("**Análise dos IDs retornados:**")
-
-            ids_api = [item.get("id") for item in data_teste]
-            tipos_api = set(type(x).__name__ for x in ids_api)
-            st.write(f"Tipos dos IDs na API: `{tipos_api}`")
-
-            # Normaliza para int e compara
-            ids_api_int = [int(x) for x in ids_api if x is not None]
-            novos = [x for x in ids_api_int if x not in ids_importados_norm]
-            ja_tem = [x for x in ids_api_int if x in ids_importados_norm]
-
-            col_n1, col_n2 = st.columns(2)
-            col_n1.metric("Novos (não estão no set)", len(novos))
-            col_n2.metric("Já importados", len(ja_tem))
-
-            # 4) Amostra dos 3 primeiros IDs e verificação individual
-            st.markdown("**Verificação individual (3 primeiros):**")
-            for idx, atend in enumerate(data_teste[:3]):
-                atend_id = atend.get("id")
-                atend_id_int = int(atend_id) if atend_id else None
-                start = atend.get("started_at", "?")
-                in_set = atend_id_int in ids_importados_norm
-                st.write(
-                    f"  {idx+1}. ID `{atend_id}` (tipo {type(atend_id).__name__}) · "
-                    f"iniciado em `{start}` · "
-                    f"no set? **{'SIM' if in_set else 'NÃO'}**"
-                )
-
-            if not novos:
-                st.warning(
-                    "⚠️ Todos os IDs desta página JÁ ESTÃO no Supabase. "
-                    "Se você espera que sejam novos, o problema pode ser: "
-                    "(a) filtro da API retornando dados antigos, "
-                    "(b) já foram importados numa sessão anterior, "
-                    "(c) a API está ignorando o filtro de data."
-                )
-
-        except Exception as e:
-            st.error(f"❌ Erro no teste da API: {e}")
-            return 0, [f"Erro no teste: {e}"]
-
-    # ── IMPORTAÇÃO REAL ─────────────────────────────────────────────────
     st.info(
         f"🔄 Iniciando importação em lotes de **{tamanho_lote}** · "
         f"Já existem **{len(ids_importados_norm):,}** atendimentos no Supabase"
@@ -367,6 +260,109 @@ filtros_ativos = dict(
     order_by=f_order,
     order_direction=f_dir,
 )
+
+
+# ── 🔬 PAINEL DE DIAGNÓSTICO (sempre visível) ────────────────────────────────
+from urllib.parse import urlencode
+from api_client import _headers as _dbg_h, _base as _dbg_b, _build_params as _dbg_p
+import requests as _req
+
+diag = st.container(border=True)
+with diag:
+    st.markdown("### 🔬 Diagnóstico do sistema")
+
+    # Normaliza cache
+    _ids_norm_cache = {int(x) for x in ids_importados if x is not None}
+
+    # ── Linha 1: status gerais ──
+    c1, c2, c3, c4 = st.columns(4)
+
+    try:
+        ok_sb, msg_sb = testar_conexao()
+    except Exception as e:
+        ok_sb, msg_sb = False, str(e)
+
+    c1.metric("Supabase", "✅ Conectado" if ok_sb else "❌ Erro", help=msg_sb)
+    c2.metric(
+        "IDs no cache",
+        f"{len(_ids_norm_cache):,}".replace(",", "."),
+        help="Atendimentos já importados em memória",
+    )
+    if _ids_norm_cache:
+        c3.metric("Maior ID no cache", sorted(_ids_norm_cache, reverse=True)[0])
+    else:
+        c3.metric("Maior ID no cache", "—")
+    c4.metric("Filtros preenchidos", sum(1 for v in filtros_ativos.values() if v and v not in ("created_at", "desc")))
+
+    # ── Filtros sendo enviados ──
+    st.markdown("**Filtros que serão enviados à API:**")
+    filtros_nao_nulos = {k: str(v) for k, v in filtros_ativos.items() if v is not None}
+    st.json(filtros_nao_nulos)
+
+    # ── Teste real da API ──
+    st.markdown("**Resposta da API (chamada real com os filtros acima, página 1):**")
+    try:
+        params_teste = _dbg_p(page=1, **filtros_ativos)
+        url_teste = f"{_dbg_b()}/chats?{urlencode(params_teste)}"
+        st.code(url_teste, language="text")
+
+        with st.spinner("Consultando API…"):
+            resp = _req.get(f"{_dbg_b()}/chats", headers=_dbg_h(), params=params_teste, timeout=30)
+
+        ct1, ct2, ct3, ct4 = st.columns(4)
+        ct1.metric("HTTP", resp.status_code)
+
+        if resp.status_code == 200:
+            payload_teste = resp.json()
+            meta_teste  = payload_teste.get("meta", {})
+            data_teste  = payload_teste.get("data", [])
+            links_teste = payload_teste.get("links", {})
+
+            ct2.metric("Itens retornados", len(data_teste))
+            ct3.metric("per_page", meta_teste.get("per_page", "?"))
+            ct4.metric("Tem next?", "Sim" if links_teste.get("next") else "Não")
+
+            if data_teste:
+                # Análise dos IDs
+                ids_api = [item.get("id") for item in data_teste]
+                tipos = set(type(x).__name__ for x in ids_api)
+                ids_int = [int(x) for x in ids_api if x is not None]
+
+                novos = [x for x in ids_int if x not in _ids_norm_cache]
+                ja = [x for x in ids_int if x in _ids_norm_cache]
+
+                st.caption(f"Tipos dos IDs: `{tipos}` · Conversão para int: OK")
+
+                cn1, cn2 = st.columns(2)
+                cn1.metric("🆕 Novos (não estão no cache)", len(novos))
+                cn2.metric("♻️ Já importados (no cache)", len(ja))
+
+                # Amostra dos 3 primeiros
+                st.markdown("**Amostra dos 3 primeiros atendimentos retornados:**")
+                for idx, item in enumerate(data_teste[:3]):
+                    aid = int(item.get("id"))
+                    start = item.get("started_at", "?")
+                    agent = (item.get("agent") or {}).get("name", "—")
+                    sector = (item.get("sector") or {}).get("name", "—")
+                    in_cache = aid in _ids_norm_cache
+
+                    status_emoji = "♻️" if in_cache else "🆕"
+                    st.code(
+                        f"{status_emoji}  ID {aid}  ·  {start}  ·  "
+                        f"Atendente: {agent[:30]}  ·  Setor: {sector[:30]}  ·  "
+                        f"{'EM CACHE' if in_cache else 'NOVO'}",
+                        language="text",
+                    )
+            else:
+                st.error("❌ A API retornou lista vazia. Verifique os filtros enviados.")
+        else:
+            st.error(f"API retornou HTTP {resp.status_code}")
+            st.code(resp.text[:500], language="text")
+    except Exception as e:
+        st.error(f"Erro ao consultar API: {e}")
+
+
+st.divider()
 
 
 # ── Importação ────────────────────────────────────────────────────────────────
