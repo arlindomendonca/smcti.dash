@@ -4,7 +4,7 @@ Listagem com filtros, paginação, painel de mensagens e importação para Supab
 """
 import streamlit as st
 from datetime import date, datetime
-from api_client import get_atendimentos, get_mensagens, get_todas_paginas
+from api_client import get_atendimentos, get_mensagens, iter_atendimentos_lotes
 from supabase_client import (
     get_ids_importados,
     upsert_departamento,
@@ -15,7 +15,7 @@ from supabase_client import (
 )
 
 # ── Página ──────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Atendimentos · Integração", page_icon="💬", layout="wide")
+st.set_page_config(page_title="Atendimentos", page_icon="💬", layout="wide")
 
 # ── CSS ─────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -82,48 +82,67 @@ def render_mensagens(atendimento_id: int, recipient: str):
     st.markdown(f'<div class="chat-wrap">{rows_html}</div>', unsafe_allow_html=True)
 
 
-# ── Importação completa ───────────────────────────────────────────────────────
-def executar_importacao(filtros: dict, ids_importados: set) -> tuple[int, list[str]]:
+# ── Importação em lotes ──────────────────────────────────────────────────────
+def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 1000) -> tuple[int, list[str]]:
     """
-    Busca todas as páginas da API com os filtros ativos,
-    importa apenas atendimentos novos (não presentes em ids_importados).
-    Retorna (total_importado, lista_de_erros).
+    Importa atendimentos em lotes de `tamanho_lote` para não travar em
+    volumes grandes (ex: dias com 20.000+ atendimentos).
+
+    A API gove.digital NÃO retorna meta.total, então usamos os
+    links.next como sinal de fim. O progresso é exibido em valores
+    absolutos (processados / importados) sem percentual.
     """
     erros: list[str] = []
-    total = 0
+    total_importado = 0
 
-    with st.spinner("Buscando atendimentos na API…"):
-        try:
-            chats = get_todas_paginas(**filtros, ids_ja_importados=ids_importados)
-        except Exception as e:
-            return 0, [f"Erro ao buscar API: {e}"]
+    st.info(
+        f"🔄 Iniciando importação em lotes de **{tamanho_lote}** · "
+        f"Já existem **{len(ids_importados):,}** atendimentos no Supabase"
+        .replace(",", ".")
+    )
 
-    if not chats:
-        return 0, []
+    progress_lote = st.progress(0, text="Buscando primeiro lote…")
+    status_text   = st.empty()
 
-    progress = st.progress(0, text="Importando…")
-    n = len(chats)
+    processados = 0
+    lote_num = 0
 
-    for i, chat in enumerate(chats):
-        atend_id = chat.get("id")
-        try:
-            # 1. Departamento (upsert por uuid — idempotente)
-            upsert_departamento(chat.get("sector") or {})
-            # 2. Atendente (upsert por uuid — idempotente)
-            upsert_atendente(chat.get("agent") or {})
-            # 3. Atendimento
-            upsert_atendimento(chat)
-            # 4. Mensagens
-            msgs_payload = get_mensagens(atend_id)
-            upsert_mensagens(atend_id, msgs_payload.get("data", []))
-            total += 1
-        except Exception as e:
-            erros.append(f"Atendimento #{atend_id}: {e}")
+    try:
+        for lote, paginas in iter_atendimentos_lotes(**filtros, ids_ja_importados=ids_importados, tamanho_lote=tamanho_lote):
+            lote_num += 1
+            lote_tam = len(lote)
 
-        progress.progress((i + 1) / n, text=f"Importando {i+1}/{n}…")
+            for i, chat in enumerate(lote):
+                atend_id = chat.get("id")
+                try:
+                    upsert_departamento(chat.get("sector") or {})
+                    upsert_atendente(chat.get("agent") or {})
+                    upsert_atendimento(chat)
+                    msgs_payload = get_mensagens(atend_id)
+                    upsert_mensagens(atend_id, msgs_payload.get("data", []))
+                    total_importado += 1
+                except Exception as e:
+                    erros.append(f"Atendimento #{atend_id}: {str(e)[:150]}")
 
-    progress.empty()
-    return total, erros
+                processados += 1
+                progress_lote.progress(
+                    (i + 1) / lote_tam,
+                    text=f"Lote {lote_num} — item {i+1}/{lote_tam} · "
+                         f"Total: {total_importado:,} importados · {len(erros)} erros"
+                         .replace(",", ".")
+                )
+
+            status_text.info(
+                f"✓ Lote {lote_num} concluído — {lote_tam} atendimentos processados. "
+                f"Buscando próximo lote…"
+            )
+    except Exception as e:
+        erros.append(f"Falha ao buscar lote: {e}")
+
+    progress_lote.empty()
+    status_text.empty()
+
+    return total_importado, erros
 
 
 # ── Session state ────────────────────────────────────────────────────────────
@@ -169,7 +188,7 @@ with st.expander("🔍 Filtros", expanded=True):
         f_end_ini = st.date_input("Fim — de",  value=None, format="DD/MM/YYYY")
         f_end_fin = st.date_input("Fim — até", value=None, format="DD/MM/YYYY")
 
-    fc1, fc2, _, fbtn_clear, fbtn_int = st.columns([2, 2, 2, 1, 1.4])
+    fc1, fc2, fc_lote, fbtn_clear, fbtn_int = st.columns([2, 2, 1.3, 1, 1.4])
     with fc1:
         f_order = st.selectbox("Ordenar por", ["created_at"], label_visibility="collapsed")
     with fc2:
@@ -177,6 +196,15 @@ with st.expander("🔍 Filtros", expanded=True):
             "Direção", ["desc", "asc"],
             format_func=lambda x: "Decrescente" if x == "desc" else "Crescente",
             label_visibility="collapsed",
+        )
+    with fc_lote:
+        tam_lote = st.selectbox(
+            "Lote",
+            [250, 500, 1000, 2000],
+            index=2,
+            format_func=lambda x: f"Lote {x}",
+            label_visibility="collapsed",
+            help="Tamanho do lote de importação. Valores menores = menos travamento em volumes altos.",
         )
     with fbtn_clear:
         if st.button("🔄 Limpar filtros", use_container_width=True):
@@ -208,7 +236,7 @@ if integrar_clicked:
         st.error(f"❌ Falha na conexão com o Supabase: {msg_conn}")
         st.stop()
 
-    total_imp, erros = executar_importacao(filtros_ativos, ids_importados)
+    total_imp, erros = executar_importacao(filtros_ativos, ids_importados, tamanho_lote=tam_lote)
 
     if total_imp == 0 and not erros:
         st.session_state.importacao_msg = ("info", "Nenhum atendimento novo encontrado para importar.")

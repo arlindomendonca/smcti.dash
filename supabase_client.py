@@ -93,18 +93,30 @@ def _upsert(table: str, payload: list[dict], on_conflict: str) -> None:
 # ── IDs já importados ─────────────────────────────────────────────────────────
 
 def get_ids_importados() -> set[int]:
-    """Retorna todos os IDs de atendimentos já gravados no Supabase."""
+    """
+    Retorna todos os IDs de atendimentos já gravados no Supabase.
+
+    O PostgREST tem limite padrão de 1000 linhas por resposta,
+    então usamos paginação por Range header (header HTTP padrão
+    do PostgREST) para trazer todos os registros, mesmo que a
+    tabela tenha dezenas de milhares.
+    """
     todos: set[int] = set()
-    limit = 1000
+    chunk_size = 1000
     offset = 0
 
     while True:
+        headers = _read_headers().copy()
+        # Range header força o PostgREST a aceitar ranges além do default
+        headers["Range-Unit"] = "items"
+        headers["Range"] = f"{offset}-{offset + chunk_size - 1}"
+
         url = f"{_sb_url()}/rest/v1/atendimento"
         r = requests.get(
             url,
-            headers=_read_headers(),
-            params={"select": "id", "limit": str(limit), "offset": str(offset)},
-            timeout=15,
+            headers=headers,
+            params={"select": "id", "order": "id.asc"},
+            timeout=30,
         )
         if not r.ok:
             break
@@ -112,9 +124,10 @@ def get_ids_importados() -> set[int]:
         if not rows:
             break
         todos.update(row["id"] for row in rows)
-        if len(rows) < limit:
+        # Se veio menos que o chunk, acabou
+        if len(rows) < chunk_size:
             break
-        offset += limit
+        offset += chunk_size
 
     return todos
 
