@@ -15,7 +15,7 @@ from supabase_client import (
 )
 
 # ── Página ──────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Atendimentos", page_icon="💬", layout="wide")
+st.set_page_config(page_title="Atendimentos · Integração", page_icon="💬", layout="wide")
 
 # ── CSS ─────────────────────────────────────────────────────────────────────
 st.markdown("""

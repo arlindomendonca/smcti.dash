@@ -168,3 +168,72 @@ def upsert_mensagens(atendimento_id: int, mensagens: list[dict]) -> None:
         "send_status_confirmation": m.get("send_status_confirmation"),
     } for m in mensagens if m.get("uuid")]
     _upsert("mensagem", payload, "uuid")
+
+
+# ── Leitura para o dashboard ──────────────────────────────────────────────────
+
+def _get_all(table_or_view: str, params: dict | None = None) -> list[dict]:
+    """Leitura paginada (lotes de 1000) de tabela ou view."""
+    params = dict(params or {})
+    todos: list[dict] = []
+    limit = 1000
+    offset = 0
+
+    while True:
+        p = {**params, "limit": str(limit), "offset": str(offset)}
+        r = requests.get(
+            f"{_sb_url()}/rest/v1/{table_or_view}",
+            headers=_read_headers(),
+            params=p,
+            timeout=30,
+        )
+        if not r.ok:
+            raise Exception(f"Supabase GET {table_or_view} {r.status_code}: {r.text[:200]}")
+        rows = r.json()
+        if not rows:
+            break
+        todos.extend(rows)
+        if len(rows) < limit:
+            break
+        offset += limit
+
+    return todos
+
+
+def get_atendimentos_enriquecidos(
+    data_inicio: str | None = None,
+    data_fim: str | None = None,
+) -> list[dict]:
+    """
+    Lê a view vw_atendimento_enriquecido.
+    Datas em formato 'YYYY-MM-DD' (filtro no campo started_at).
+    """
+    params: dict = {"select": "*", "order": "started_at.desc"}
+    filtros = []
+    if data_inicio:
+        filtros.append(f"started_at=gte.{data_inicio}T00:00:00")
+    if data_fim:
+        filtros.append(f"started_at=lte.{data_fim}T23:59:59")
+    # PostgREST aceita múltiplos filtros como query-string separada
+    extra_qs = "&".join(filtros)
+
+    url = f"{_sb_url()}/rest/v1/vw_atendimento_enriquecido?select=*&order=started_at.desc"
+    if extra_qs:
+        url = f"{url}&{extra_qs}"
+
+    todos: list[dict] = []
+    limit = 1000
+    offset = 0
+    while True:
+        paged_url = f"{url}&limit={limit}&offset={offset}"
+        r = requests.get(paged_url, headers=_read_headers(), timeout=30)
+        if not r.ok:
+            raise Exception(f"Supabase view {r.status_code}: {r.text[:200]}")
+        rows = r.json()
+        if not rows:
+            break
+        todos.extend(rows)
+        if len(rows) < limit:
+            break
+        offset += limit
+    return todos

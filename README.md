@@ -1,22 +1,45 @@
 # Plataforma de Atendimentos — Rio Verde GO
 
-Aplicação Streamlit para consulta e importação dos atendimentos da plataforma gove.digital para o Supabase.
+Aplicação Streamlit para consulta, importação e análise dos atendimentos da plataforma gove.digital com armazenamento no Supabase.
 
 ## Estrutura
 
 ```
 .
-├── app.py                        # Página principal
-├── api_client.py                 # Wrapper da API gove.digital
-├── supabase_client.py            # Integração com o Supabase (upsert idempotente)
+├── app.py                          # Página principal: listagem + integração
+├── api_client.py                   # Wrapper da API gove.digital
+├── supabase_client.py              # Integração com Supabase
+├── pages/
+│   └── 2_📊_Dashboard.py           # Dashboard de análise
 ├── requirements.txt
 ├── .gitignore
 └── .streamlit/
     ├── config.toml
-    └── secrets.toml.example      # Modelo — NÃO commitar o arquivo real
+    └── secrets.toml.example
 ```
 
-## Configuração local
+## Páginas
+
+### 💬 Atendimentos (principal)
+Lista os atendimentos da API com filtros e paginação. Botão **Integrar** importa todos os novos registros para o Supabase.
+
+### 📊 Dashboard
+Análise de performance com KPIs, gráficos, filtros avançados e insights automáticos:
+- Composição de atendimentos (real, 2FA, abandonado, em aberto)
+- Evolução diária
+- Performance por departamento e atendente
+- Análise de prazos e duração
+- Mapa de calor dia × hora
+- Análise de qualidade (avaliações)
+- Insights automáticos para alocação de times
+
+## Dependências
+- `streamlit` — interface
+- `requests` — chamadas HTTP
+- `pandas` — manipulação tabular
+- `altair` — gráficos interativos
+
+## Configuração
 
 ```bash
 git clone https://github.com/seu-usuario/atendimentos.git
@@ -27,11 +50,16 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 streamlit run app.py
 ```
 
+## SQL no Supabase
+
+Execute nesta ordem no SQL Editor:
+1. `schema_supabase.sql` — cria as tabelas
+2. `disable_rls_supabase.sql` — desabilita RLS (backend usa service_role)
+3. `view_atendimento_enriquecido.sql` — cria a view usada pelo Dashboard
+
 ## Deploy no Streamlit Cloud
 
-1. Suba o repositório no GitHub (sem o `secrets.toml`).
-2. Em [share.streamlit.io](https://share.streamlit.io), conecte o repositório.
-3. Em **Settings → Secrets**, cole:
+Em **Settings → Secrets**:
 
 ```toml
 [api]
@@ -39,16 +67,6 @@ base_url = "https://api.gove.digital/v2"
 token = "SEU_TOKEN_AQUI"
 
 [supabase]
-url = "https://xxxxxxxxxxxx.supabase.co"
-service_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+url = "https://xxxxxxxx.supabase.co"
+service_key = "eyJ..."   # service_role key
 ```
-
-> Use a **service_role key** do Supabase (Project Settings → API), não a anon key.
-
-## Como funciona a importação
-
-- A lista exibe apenas atendimentos **ainda não importados** no Supabase.
-- O botão **⬆️ Integrar** percorre **todas as páginas** da API com os filtros ativos.
-- Para cada atendimento novo: faz upsert de departamento → atendente → atendimento → mensagens.
-- Upserts são **idempotentes** (chave `uuid` / `id`): rodar duas vezes não duplica dados.
-- Após importação, os registros somem da lista automaticamente.
