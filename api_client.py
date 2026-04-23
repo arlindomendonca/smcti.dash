@@ -83,7 +83,7 @@ def get_atendimentos(
     return resp.json()
 
 
-def get_todas_paginas(
+def iter_atendimentos_lotes(
     id: Optional[str] = None,
     recipient: Optional[str] = None,
     agent_uuid: Optional[str] = None,
@@ -94,14 +94,23 @@ def get_todas_paginas(
     order_by: str = "created_at",
     order_direction: str = "desc",
     ids_ja_importados: Optional[set] = None,
-) -> list[dict]:
+    tamanho_lote: int = 1000,
+):
     """
-    Percorre todas as páginas e retorna apenas os atendimentos
-    ainda NÃO presentes no Supabase.
+    Iterador que retorna atendimentos NOVOS (não importados) em lotes.
+    Cada `yield` entrega até `tamanho_lote` atendimentos prontos para importar.
+
+    A API retorna 25 por página, então o iterador agrupa internamente
+    várias páginas até formar um lote. Isso evita carregar todas as
+    20.000+ ocorrências de um dia na memória de uma só vez.
+
+    Yields:
+        tuple[list[dict], int]: (lote_de_atendimentos, total_paginas_consultadas)
     """
     ids_ja_importados = ids_ja_importados or set()
-    todos: list[dict] = []
+    buffer: list[dict] = []
     page = 1
+    paginas_consultadas = 0
 
     while True:
         params = _build_params(
@@ -110,23 +119,58 @@ def get_todas_paginas(
             finished_at_initial=finished_at_initial, finished_at_final=finished_at_final,
             order_by=order_by, order_direction=order_direction,
         )
-        resp = requests.get(f"{_base()}/chats", headers=_headers(), params=params, timeout=15)
+        resp = requests.get(f"{_base()}/chats", headers=_headers(), params=params, timeout=30)
         resp.raise_for_status()
         payload = resp.json()
+        paginas_consultadas += 1
 
         items = payload.get("data", [])
         if not items:
             break
 
+        # Filtra apenas novos
         novos = [item for item in items if item.get("id") not in ids_ja_importados]
-        todos.extend(novos)
+        buffer.extend(novos)
+
+        # Se atingiu o tamanho do lote, emite
+        while len(buffer) >= tamanho_lote:
+            yield buffer[:tamanho_lote], paginas_consultadas
+            buffer = buffer[tamanho_lote:]
 
         next_link = payload.get("links", {}).get("next")
         if not next_link:
             break
         page += 1
 
-    return todos
+    # Emite o resto
+    if buffer:
+        yield buffer, paginas_consultadas
+
+
+def get_meta_filtro(
+    id: Optional[str] = None,
+    recipient: Optional[str] = None,
+    agent_uuid: Optional[str] = None,
+    started_at_initial: Optional[date] = None,
+    started_at_final: Optional[date] = None,
+    finished_at_initial: Optional[date] = None,
+    finished_at_final: Optional[date] = None,
+    order_by: str = "created_at",
+    order_direction: str = "desc",
+) -> dict:
+    """
+    Retorna apenas o bloco 'meta' da primeira página — útil para
+    saber o total de registros antes de começar a importação.
+    """
+    params = _build_params(
+        page=1, id=id, recipient=recipient, agent_uuid=agent_uuid,
+        started_at_initial=started_at_initial, started_at_final=started_at_final,
+        finished_at_initial=finished_at_initial, finished_at_final=finished_at_final,
+        order_by=order_by, order_direction=order_direction,
+    )
+    resp = requests.get(f"{_base()}/chats", headers=_headers(), params=params, timeout=15)
+    resp.raise_for_status()
+    return resp.json().get("meta", {})
 
 
 def get_mensagens(atendimento_id: int) -> dict:
