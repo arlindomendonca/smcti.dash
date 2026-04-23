@@ -87,14 +87,57 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
     """
     Importa atendimentos em lotes de `tamanho_lote` para não travar em
     volumes grandes (ex: dias com 20.000+ atendimentos).
-
-    A API gove.digital NÃO retorna meta.total, então usamos os
-    links.next como sinal de fim. O progresso é exibido em valores
-    absolutos (processados / importados) sem percentual.
     """
+    from api_client import get_atendimentos as _dbg_get
+
     erros: list[str] = []
     total_importado = 0
 
+    # ── DIAGNÓSTICO INICIAL ────────────────────────────────────────────
+    with st.expander("🔬 Diagnóstico da importação", expanded=True):
+        st.write(f"**IDs já no Supabase:** {len(ids_importados):,}".replace(",", "."))
+        st.write(f"**Filtros ativos:**")
+        filtros_limpos = {k: str(v) for k, v in filtros.items() if v is not None}
+        st.json(filtros_limpos)
+
+        # Testa uma chamada direta à API para ver o retorno
+        try:
+            with st.spinner("Testando API gove.digital…"):
+                teste = _dbg_get(page=1, **filtros)
+
+            meta_teste = teste.get("meta", {})
+            data_teste = teste.get("data", [])
+            links_teste = teste.get("links", {})
+
+            st.write(f"**API retornou:** {len(data_teste)} itens na página 1")
+            st.write(f"**Meta:** `{meta_teste}`")
+            st.write(f"**Tem próxima página?** {'Sim' if links_teste.get('next') else 'Não'}")
+
+            if data_teste:
+                primeiros_ids = [item.get("id") for item in data_teste[:5]]
+                st.write(f"**Primeiros 5 IDs retornados:** `{primeiros_ids}`")
+
+                # Verifica se eles estão no set
+                novos_count = sum(1 for item in data_teste if item.get("id") not in ids_importados)
+                ja_count = len(data_teste) - novos_count
+                st.write(f"**Dessa página:** {novos_count} novos · {ja_count} já importados")
+
+                if novos_count == 0 and ja_count > 0:
+                    st.warning(
+                        "⚠️ Todos os IDs desta página já estão no Supabase. "
+                        "Se você espera registros NOVOS aqui, o problema pode ser que os "
+                        "dados do dia já foram importados OU os IDs estão colidindo por coincidência. "
+                        f"Exemplo de ID na API: `{primeiros_ids[0]}` — "
+                        f"esse ID está no set de importados? {'SIM' if primeiros_ids[0] in ids_importados else 'NÃO'}"
+                    )
+            else:
+                st.error("❌ API retornou lista vazia na primeira página! Verifique os filtros.")
+                return 0, ["API retornou zero registros na primeira página."]
+        except Exception as e:
+            st.error(f"❌ Erro no teste da API: {e}")
+            return 0, [f"Erro no teste: {e}"]
+
+    # ── IMPORTAÇÃO REAL ─────────────────────────────────────────────────
     st.info(
         f"🔄 Iniciando importação em lotes de **{tamanho_lote}** · "
         f"Já existem **{len(ids_importados):,}** atendimentos no Supabase"
@@ -103,14 +146,22 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
 
     progress_lote = st.progress(0, text="Buscando primeiro lote…")
     status_text   = st.empty()
+    debug_text    = st.empty()
 
     processados = 0
     lote_num = 0
+    paginas_totais = 0
 
     try:
         for lote, paginas in iter_atendimentos_lotes(**filtros, ids_ja_importados=ids_importados, tamanho_lote=tamanho_lote):
             lote_num += 1
             lote_tam = len(lote)
+            paginas_totais = paginas
+
+            debug_text.caption(
+                f"🔬 Lote {lote_num}: {lote_tam} itens novos · "
+                f"{paginas_totais} páginas consultadas na API até agora"
+            )
 
             for i, chat in enumerate(lote):
                 atend_id = chat.get("id")
@@ -141,6 +192,16 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
 
     progress_lote.empty()
     status_text.empty()
+    debug_text.empty()
+
+    # Se nada foi importado, mostra razão explícita
+    if total_importado == 0 and not erros:
+        st.warning(
+            f"⚠️ O iterador rodou mas não emitiu nenhum lote. "
+            f"Páginas consultadas na API: {paginas_totais}. "
+            f"Isso significa que TODOS os registros retornados pela API "
+            f"já estão no Supabase (set de {len(ids_importados):,} IDs).".replace(",", ".")
+        )
 
     return total_importado, erros
 
@@ -169,8 +230,22 @@ ids_importados: set = st.session_state.ids_importados
 
 
 # ── Cabeçalho ────────────────────────────────────────────────────────────────
-st.title("💬 Atendimentos")
-st.caption("Plataforma de Gestão · Rio Verde GO")
+col_titulo, col_reload = st.columns([5, 1])
+with col_titulo:
+    st.title("💬 Atendimentos")
+    st.caption(f"Plataforma de Gestão · Rio Verde GO · "
+               f"**{len(ids_importados):,}** atendimentos no Supabase".replace(",", "."))
+with col_reload:
+    st.write("")
+    st.write("")
+    if st.button("🔁 Recarregar cache", use_container_width=True,
+                 help="Recarrega a lista de IDs já importados do Supabase"):
+        try:
+            st.session_state.ids_importados = get_ids_importados()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro: {e}")
+
 st.divider()
 
 
@@ -239,27 +314,23 @@ if integrar_clicked:
     total_imp, erros = executar_importacao(filtros_ativos, ids_importados, tamanho_lote=tam_lote)
 
     if total_imp == 0 and not erros:
-        st.session_state.importacao_msg = ("info", "Nenhum atendimento novo encontrado para importar.")
+        st.info("Nenhum atendimento novo encontrado para importar. (Veja o diagnóstico acima para detalhes)")
     elif erros:
-        msg = f"Importados: {total_imp}. Erros: {len(erros)}.\n" + "\n".join(erros[:10])
-        st.session_state.importacao_msg = ("warning", msg)
+        st.warning(f"Importados: {total_imp}. Erros: {len(erros)}.")
+        with st.expander(f"Ver {len(erros)} erros"):
+            for e in erros[:50]:
+                st.code(e)
     else:
-        st.session_state.importacao_msg = ("success", f"✅ {total_imp} atendimento(s) importado(s) com sucesso!")
+        st.success(f"✅ {total_imp} atendimento(s) importado(s) com sucesso!")
 
-    # Atualiza cache de IDs importados
+    # Atualiza cache de IDs importados (sem rerun, pra manter diagnóstico visível)
     try:
         st.session_state.ids_importados = get_ids_importados()
         ids_importados = st.session_state.ids_importados
     except Exception:
         pass
 
-    st.rerun()
-
-# Exibe resultado da última importação
-if st.session_state.importacao_msg:
-    kind, msg = st.session_state.importacao_msg
-    getattr(st, kind)(msg)
-    st.session_state.importacao_msg = None
+    st.stop()  # Para aqui, não renderiza a lista (economiza chamada API)
 
 
 # ── Busca da página atual ─────────────────────────────────────────────────────
