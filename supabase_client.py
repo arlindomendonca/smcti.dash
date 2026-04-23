@@ -10,11 +10,11 @@ import streamlit as st
 # ── Conexão ──────────────────────────────────────────────────────────────────
 
 def _sb_url() -> str:
-    return st.secrets["supabase"]["url"].rstrip("/")
+    return st.secrets["SUPABASE_URL"].rstrip("/")
 
 
 def _sb_key() -> str:
-    return st.secrets["supabase"]["service_key"]
+    return st.secrets["SUPABASE_SERVICE_KEY"]
 
 
 def _headers(extra_prefer: str = "") -> dict:
@@ -58,8 +58,8 @@ def testar_conexao() -> tuple[bool, str]:
         if r.status_code == 401:
             return False, (
                 "Erro 401 — chave inválida ou sem permissão. "
-                "Verifique se está usando a **service_role key** "
-                "(Project Settings → API → service_role), não a anon key."
+                "Verifique a SUPABASE_ANON_KEY nos secrets e se o RLS "
+                "está desabilitado nas tabelas (ou se há policies de leitura/escrita)."
             )
         if r.status_code == 404:
             return False, "Erro 404 — URL do Supabase incorreta ou tabela não existe."

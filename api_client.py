@@ -8,7 +8,7 @@ from typing import Optional
 
 
 def _headers() -> dict:
-    token = st.secrets["api"]["token"]
+    token = st.secrets["GOVE_TOKEN"]
     return {
         "accept": "application/json",
         "authorization": f"Bearer {token}",
@@ -16,7 +16,7 @@ def _headers() -> dict:
 
 
 def _base() -> str:
-    return st.secrets["api"]["base_url"]
+    return st.secrets["GOVE_BASE_URL"]
 
 
 def _fmt_date(d: Optional[date]) -> Optional[str]:
