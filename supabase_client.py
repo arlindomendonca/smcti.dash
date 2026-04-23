@@ -10,11 +10,11 @@ import streamlit as st
 # ── Conexão ──────────────────────────────────────────────────────────────────
 
 def _sb_url() -> str:
-    return st.secrets["supabase"]["url"].rstrip("/")
+    return st.secrets["SUPABASE_URL"].rstrip("/")
 
 
 def _sb_key() -> str:
-    return st.secrets["supabase"]["service_key"]
+    return st.secrets["SUPABASE_SERVICE_KEY"]
 
 
 def _headers(extra_prefer: str = "") -> dict:
@@ -58,8 +58,8 @@ def testar_conexao() -> tuple[bool, str]:
         if r.status_code == 401:
             return False, (
                 "Erro 401 — chave inválida ou sem permissão. "
-                "Verifique se está usando a **service_role key** "
-                "(Project Settings → API → service_role), não a anon key."
+                "Verifique a SUPABASE_ANON_KEY nos secrets e se o RLS "
+                "está desabilitado nas tabelas (ou se há policies de leitura/escrita)."
             )
         if r.status_code == 404:
             return False, "Erro 404 — URL do Supabase incorreta ou tabela não existe."
@@ -168,80 +168,3 @@ def upsert_mensagens(atendimento_id: int, mensagens: list[dict]) -> None:
         "send_status_confirmation": m.get("send_status_confirmation"),
     } for m in mensagens if m.get("uuid")]
     _upsert("mensagem", payload, "uuid")
-
-
-# ── Leitura para o dashboard ──────────────────────────────────────────────────
-
-def _get_all(table_or_view: str, params: dict | None = None) -> list[dict]:
-    """Leitura paginada (lotes de 1000) de tabela ou view."""
-    params = dict(params or {})
-    todos: list[dict] = []
-    limit = 1000
-    offset = 0
-
-    while True:
-        p = {**params, "limit": str(limit), "offset": str(offset)}
-        r = requests.get(
-            f"{_sb_url()}/rest/v1/{table_or_view}",
-            headers=_read_headers(),
-            params=p,
-            timeout=30,
-        )
-        if not r.ok:
-            raise Exception(f"Supabase GET {table_or_view} {r.status_code}: {r.text[:200]}")
-        rows = r.json()
-        if not rows:
-            break
-        todos.extend(rows)
-        if len(rows) < limit:
-            break
-        offset += limit
-
-    return todos
-
-
-def get_atendimentos_enriquecidos(
-    data_inicio: str | None = None,
-    data_fim: str | None = None,
-) -> list[dict]:
-    """
-    Lê a view vw_atendimento_enriquecido.
-    Datas em formato 'YYYY-MM-DD' (filtro no campo started_at).
-    """
-    # PostgREST: para filtros de comparação, a chave é o nome da coluna
-    # e o valor começa com o operador: 'gte.2026-01-01'
-    base_params: dict = {
-        "select": "*",
-        "order":  "started_at.desc",
-    }
-    if data_inicio:
-        base_params["started_at"] = f"gte.{data_inicio}"
-    if data_fim:
-        # Como não pode haver duas chaves 'started_at' em um dict,
-        # usamos 'and' para combinar filtros na mesma coluna
-        if data_inicio:
-            base_params.pop("started_at")
-            base_params["and"] = f"(started_at.gte.{data_inicio},started_at.lte.{data_fim}T23:59:59)"
-        else:
-            base_params["started_at"] = f"lte.{data_fim}T23:59:59"
-
-    url = f"{_sb_url()}/rest/v1/vw_atendimento_enriquecido"
-
-    todos: list[dict] = []
-    limit = 1000
-    offset = 0
-    while True:
-        params = {**base_params, "limit": str(limit), "offset": str(offset)}
-        r = requests.get(url, headers=_read_headers(), params=params, timeout=30)
-        if not r.ok:
-            raise Exception(
-                f"Supabase view {r.status_code}: {r.text[:400]} | URL={r.url}"
-            )
-        rows = r.json()
-        if not rows:
-            break
-        todos.extend(rows)
-        if len(rows) < limit:
-            break
-        offset += limit
-    return todos
