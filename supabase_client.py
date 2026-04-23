@@ -1,102 +1,160 @@
 """
 supabase_client.py — Integração com o Supabase
-Usa a REST API do Supabase diretamente via requests (sem SDK extra).
-Todas as operações de escrita são upsert por UUID — seguro rodar N vezes.
+REST API do Supabase via requests (sem SDK extra).
+Upserts são idempotentes: chave única uuid/id — seguro rodar N vezes.
 """
 import requests
 import streamlit as st
-from typing import Any
 
 
-# ── Conexão ─────────────────────────────────────────────────────────────────
+# ── Conexão ──────────────────────────────────────────────────────────────────
 
 def _sb_url() -> str:
     return st.secrets["supabase"]["url"].rstrip("/")
 
 
-def _sb_headers(prefer: str = "") -> dict:
-    h = {
-        "apikey": st.secrets["supabase"]["service_key"],
-        "Authorization": f"Bearer {st.secrets['supabase']['service_key']}",
-        "Content-Type": "application/json",
+def _sb_key() -> str:
+    return st.secrets["supabase"]["service_key"]
+
+
+def _headers(extra_prefer: str = "") -> dict:
+    """
+    Headers obrigatórios para a REST API do Supabase.
+    O Prefer para upsert deve ser exatamente:
+      'resolution=merge-duplicates'   (sem 'return=minimal' junto)
+    """
+    prefer = "resolution=merge-duplicates"
+    if extra_prefer:
+        prefer = extra_prefer
+    return {
+        "apikey":        _sb_key(),
+        "Authorization": f"Bearer {_sb_key()}",
+        "Content-Type":  "application/json",
+        "Prefer":        prefer,
     }
-    if prefer:
-        h["Prefer"] = prefer
-    return h
 
 
-def _post(table: str, payload: list[dict], on_conflict: str) -> requests.Response:
-    """Upsert em lote numa tabela do Supabase."""
+def _read_headers() -> dict:
+    return {
+        "apikey":        _sb_key(),
+        "Authorization": f"Bearer {_sb_key()}",
+        "Content-Type":  "application/json",
+    }
+
+
+def testar_conexao() -> tuple[bool, str]:
+    """
+    Testa se a service_key consegue ler a tabela atendimento.
+    Retorna (ok, mensagem).
+    """
+    try:
+        url = f"{_sb_url()}/rest/v1/atendimento"
+        r = requests.get(
+            url,
+            headers=_read_headers(),
+            params={"select": "id", "limit": "1"},
+            timeout=10,
+        )
+        if r.status_code == 401:
+            return False, (
+                "Erro 401 — chave inválida ou sem permissão. "
+                "Verifique se está usando a **service_role key** "
+                "(Project Settings → API → service_role), não a anon key."
+            )
+        if r.status_code == 404:
+            return False, "Erro 404 — URL do Supabase incorreta ou tabela não existe."
+        r.raise_for_status()
+        return True, "Conexão OK"
+    except requests.exceptions.ConnectionError:
+        return False, "Erro de conexão — verifique a URL do Supabase nos secrets."
+    except Exception as e:
+        return False, str(e)
+
+
+def _upsert(table: str, payload: list[dict], on_conflict: str) -> None:
+    """
+    Upsert em lote.
+    on_conflict: nome da coluna que é chave única (ex: 'uuid' ou 'id').
+    """
+    if not payload:
+        return
     url = f"{_sb_url()}/rest/v1/{table}"
-    return requests.post(
+    r = requests.post(
         url,
         json=payload,
-        headers=_sb_headers(f"resolution=merge-duplicates,return=minimal"),
+        headers=_headers(),
         params={"on_conflict": on_conflict},
         timeout=30,
     )
+    if not r.ok:
+        raise Exception(f"Supabase [{table}] {r.status_code}: {r.text[:300]}")
 
 
-# ── IDs já importados ────────────────────────────────────────────────────────
+# ── IDs já importados ─────────────────────────────────────────────────────────
 
 def get_ids_importados() -> set[int]:
-    """Retorna o conjunto de IDs de atendimentos já gravados no Supabase."""
-    url = f"{_sb_url()}/rest/v1/atendimento"
-    resp = requests.get(
-        url,
-        headers=_sb_headers(),
-        params={"select": "id"},
-        timeout=15,
-    )
-    if not resp.ok:
-        return set()
-    return {row["id"] for row in resp.json()}
+    """Retorna todos os IDs de atendimentos já gravados no Supabase."""
+    todos: set[int] = set()
+    limit = 1000
+    offset = 0
+
+    while True:
+        url = f"{_sb_url()}/rest/v1/atendimento"
+        r = requests.get(
+            url,
+            headers=_read_headers(),
+            params={"select": "id", "limit": str(limit), "offset": str(offset)},
+            timeout=15,
+        )
+        if not r.ok:
+            break
+        rows = r.json()
+        if not rows:
+            break
+        todos.update(row["id"] for row in rows)
+        if len(rows) < limit:
+            break
+        offset += limit
+
+    return todos
 
 
-# ── Importação ───────────────────────────────────────────────────────────────
+# ── Upserts individuais ───────────────────────────────────────────────────────
 
 def upsert_departamento(sector: dict) -> None:
     if not sector or not sector.get("uuid"):
         return
-    payload = [{
+    _upsert("departamento", [{
         "uuid":    sector["uuid"],
         "name":    sector.get("name", ""),
         "acronym": sector.get("acronym"),
-    }]
-    r = _post("departamento", payload, "uuid")
-    r.raise_for_status()
+    }], "uuid")
 
 
 def upsert_atendente(agent: dict) -> None:
     if not agent or not agent.get("uuid"):
         return
-    payload = [{
+    _upsert("atendente", [{
         "uuid":           agent["uuid"],
         "name":           agent.get("name", ""),
         "email":          agent.get("email"),
         "api_created_at": agent.get("created_at"),
-    }]
-    r = _post("atendente", payload, "uuid")
-    r.raise_for_status()
+    }], "uuid")
 
 
 def upsert_atendimento(chat: dict) -> None:
-    payload = [{
-        "id":                 chat["id"],
-        "recipient":          chat.get("recipient", ""),
-        "started_at":         chat.get("started_at"),
-        "finished_at":        chat.get("finished_at"),
-        "rating":             chat.get("rating"),
-        "atendente_uuid":     (chat.get("agent") or {}).get("uuid"),
-        "departamento_uuid":  (chat.get("sector") or {}).get("uuid"),
-    }]
-    r = _post("atendimento", payload, "id")
-    r.raise_for_status()
+    _upsert("atendimento", [{
+        "id":                chat["id"],
+        "recipient":         chat.get("recipient", ""),
+        "started_at":        chat.get("started_at"),
+        "finished_at":       chat.get("finished_at"),
+        "rating":            chat.get("rating"),
+        "atendente_uuid":    (chat.get("agent") or {}).get("uuid"),
+        "departamento_uuid": (chat.get("sector") or {}).get("uuid"),
+    }], "id")
 
 
 def upsert_mensagens(atendimento_id: int, mensagens: list[dict]) -> None:
-    if not mensagens:
-        return
     payload = [{
         "uuid":                     m["uuid"],
         "atendimento_id":           atendimento_id,
@@ -109,6 +167,4 @@ def upsert_mensagens(atendimento_id: int, mensagens: list[dict]) -> None:
         "send_status":              m.get("send_status"),
         "send_status_confirmation": m.get("send_status_confirmation"),
     } for m in mensagens if m.get("uuid")]
-    if payload:
-        r = _post("mensagem", payload, "uuid")
-        r.raise_for_status()
+    _upsert("mensagem", payload, "uuid")

@@ -11,6 +11,7 @@ from supabase_client import (
     upsert_atendente,
     upsert_atendimento,
     upsert_mensagens,
+    testar_conexao,
 )
 
 # ── Página ──────────────────────────────────────────────────────────────────
@@ -201,6 +202,12 @@ filtros_ativos = dict(
 
 # ── Importação ────────────────────────────────────────────────────────────────
 if integrar_clicked:
+    # Testa conexão antes de iniciar
+    ok, msg_conn = testar_conexao()
+    if not ok:
+        st.error(f"❌ Falha na conexão com o Supabase: {msg_conn}")
+        st.stop()
+
     total_imp, erros = executar_importacao(filtros_ativos, ids_importados)
 
     if total_imp == 0 and not erros:
