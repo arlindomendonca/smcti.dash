@@ -107,7 +107,7 @@ def iter_atendimentos_lotes(
     Yields:
         tuple[list[dict], int]: (lote_de_atendimentos, total_paginas_consultadas)
     """
-    ids_ja_importados = ids_ja_importados or set()
+    ids_ja_importados = {int(x) for x in (ids_ja_importados or set()) if x is not None}
     buffer: list[dict] = []
     page = 1
     paginas_consultadas = 0
@@ -128,8 +128,11 @@ def iter_atendimentos_lotes(
         if not items:
             break
 
-        # Filtra apenas novos
-        novos = [item for item in items if item.get("id") not in ids_ja_importados]
+        # Filtra apenas novos (normaliza ID para int)
+        novos = [
+            item for item in items
+            if int(item.get("id")) not in ids_ja_importados
+        ]
         buffer.extend(novos)
 
         # Se atingiu o tamanho do lote, emite

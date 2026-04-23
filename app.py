@@ -88,51 +88,114 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
     Importa atendimentos em lotes de `tamanho_lote` para não travar em
     volumes grandes (ex: dias com 20.000+ atendimentos).
     """
-    from api_client import get_atendimentos as _dbg_get
+    import json as _json
+    from api_client import get_atendimentos as _dbg_get, _headers as _dbg_h, _base as _dbg_b, _build_params as _dbg_p
+    import requests as _req
 
     erros: list[str] = []
     total_importado = 0
 
+    # Normaliza IDs importados para int (evita mismatch de tipo)
+    ids_importados_norm = {int(x) for x in ids_importados if x is not None}
+
     # ── DIAGNÓSTICO INICIAL ────────────────────────────────────────────
-    with st.expander("🔬 Diagnóstico da importação", expanded=True):
-        st.write(f"**IDs já no Supabase:** {len(ids_importados):,}".replace(",", "."))
-        st.write(f"**Filtros ativos:**")
-        filtros_limpos = {k: str(v) for k, v in filtros.items() if v is not None}
-        st.json(filtros_limpos)
+    diag = st.container(border=True)
+    with diag:
+        st.markdown("### 🔬 Diagnóstico da importação")
 
-        # Testa uma chamada direta à API para ver o retorno
+        # 1) Contexto
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.metric("IDs no set", f"{len(ids_importados_norm):,}".replace(",", "."))
+            if ids_importados_norm:
+                amostra = sorted(ids_importados_norm, reverse=True)[:3]
+                st.caption(f"Maiores IDs no set: `{amostra}`")
+        with col_b:
+            st.metric("Tamanho do lote", tamanho_lote)
+            filtros_ativos = {k: str(v) for k, v in filtros.items() if v is not None}
+            st.caption(f"Filtros: {len(filtros_ativos)} campos")
+
+        st.markdown("**Filtros enviados à API:**")
+        st.json(filtros_ativos)
+
+        # 2) Teste da chamada real à API (primeira página)
+        st.markdown("---")
+        st.markdown("**Teste de chamada à API (página 1):**")
+
         try:
-            with st.spinner("Testando API gove.digital…"):
-                teste = _dbg_get(page=1, **filtros)
+            params_teste = _dbg_p(page=1, **filtros)
+            url_base = f"{_dbg_b()}/chats"
 
+            # Constrói URL legível
+            from urllib.parse import urlencode
+            url_completa = f"{url_base}?{urlencode(params_teste)}"
+            st.code(url_completa, language="text")
+
+            with st.spinner("Consultando API…"):
+                resp = _req.get(url_base, headers=_dbg_h(), params=params_teste, timeout=30)
+
+            st.write(f"**Status HTTP:** `{resp.status_code}`")
+
+            if resp.status_code != 200:
+                st.error(f"API retornou erro: {resp.text[:500]}")
+                return 0, [f"API retornou HTTP {resp.status_code}"]
+
+            teste = resp.json()
             meta_teste = teste.get("meta", {})
             data_teste = teste.get("data", [])
             links_teste = teste.get("links", {})
 
-            st.write(f"**API retornou:** {len(data_teste)} itens na página 1")
-            st.write(f"**Meta:** `{meta_teste}`")
-            st.write(f"**Tem próxima página?** {'Sim' if links_teste.get('next') else 'Não'}")
+            col_m1, col_m2, col_m3 = st.columns(3)
+            col_m1.metric("Itens página 1", len(data_teste))
+            col_m2.metric("per_page", meta_teste.get("per_page", "?"))
+            col_m3.metric("Tem next?", "Sim" if links_teste.get("next") else "Não")
 
-            if data_teste:
-                primeiros_ids = [item.get("id") for item in data_teste[:5]]
-                st.write(f"**Primeiros 5 IDs retornados:** `{primeiros_ids}`")
+            st.markdown("**Meta completa da API:**")
+            st.json(meta_teste)
 
-                # Verifica se eles estão no set
-                novos_count = sum(1 for item in data_teste if item.get("id") not in ids_importados)
-                ja_count = len(data_teste) - novos_count
-                st.write(f"**Dessa página:** {novos_count} novos · {ja_count} já importados")
+            if not data_teste:
+                st.error("❌ API retornou lista VAZIA — os filtros não trouxeram nenhum registro.")
+                return 0, ["API retornou zero registros."]
 
-                if novos_count == 0 and ja_count > 0:
-                    st.warning(
-                        "⚠️ Todos os IDs desta página já estão no Supabase. "
-                        "Se você espera registros NOVOS aqui, o problema pode ser que os "
-                        "dados do dia já foram importados OU os IDs estão colidindo por coincidência. "
-                        f"Exemplo de ID na API: `{primeiros_ids[0]}` — "
-                        f"esse ID está no set de importados? {'SIM' if primeiros_ids[0] in ids_importados else 'NÃO'}"
-                    )
-            else:
-                st.error("❌ API retornou lista vazia na primeira página! Verifique os filtros.")
-                return 0, ["API retornou zero registros na primeira página."]
+            # 3) Análise dos IDs retornados
+            st.markdown("---")
+            st.markdown("**Análise dos IDs retornados:**")
+
+            ids_api = [item.get("id") for item in data_teste]
+            tipos_api = set(type(x).__name__ for x in ids_api)
+            st.write(f"Tipos dos IDs na API: `{tipos_api}`")
+
+            # Normaliza para int e compara
+            ids_api_int = [int(x) for x in ids_api if x is not None]
+            novos = [x for x in ids_api_int if x not in ids_importados_norm]
+            ja_tem = [x for x in ids_api_int if x in ids_importados_norm]
+
+            col_n1, col_n2 = st.columns(2)
+            col_n1.metric("Novos (não estão no set)", len(novos))
+            col_n2.metric("Já importados", len(ja_tem))
+
+            # 4) Amostra dos 3 primeiros IDs e verificação individual
+            st.markdown("**Verificação individual (3 primeiros):**")
+            for idx, atend in enumerate(data_teste[:3]):
+                atend_id = atend.get("id")
+                atend_id_int = int(atend_id) if atend_id else None
+                start = atend.get("started_at", "?")
+                in_set = atend_id_int in ids_importados_norm
+                st.write(
+                    f"  {idx+1}. ID `{atend_id}` (tipo {type(atend_id).__name__}) · "
+                    f"iniciado em `{start}` · "
+                    f"no set? **{'SIM' if in_set else 'NÃO'}**"
+                )
+
+            if not novos:
+                st.warning(
+                    "⚠️ Todos os IDs desta página JÁ ESTÃO no Supabase. "
+                    "Se você espera que sejam novos, o problema pode ser: "
+                    "(a) filtro da API retornando dados antigos, "
+                    "(b) já foram importados numa sessão anterior, "
+                    "(c) a API está ignorando o filtro de data."
+                )
+
         except Exception as e:
             st.error(f"❌ Erro no teste da API: {e}")
             return 0, [f"Erro no teste: {e}"]
@@ -140,7 +203,7 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
     # ── IMPORTAÇÃO REAL ─────────────────────────────────────────────────
     st.info(
         f"🔄 Iniciando importação em lotes de **{tamanho_lote}** · "
-        f"Já existem **{len(ids_importados):,}** atendimentos no Supabase"
+        f"Já existem **{len(ids_importados_norm):,}** atendimentos no Supabase"
         .replace(",", ".")
     )
 
@@ -153,7 +216,11 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
     paginas_totais = 0
 
     try:
-        for lote, paginas in iter_atendimentos_lotes(**filtros, ids_ja_importados=ids_importados, tamanho_lote=tamanho_lote):
+        for lote, paginas in iter_atendimentos_lotes(
+            **filtros,
+            ids_ja_importados=ids_importados_norm,
+            tamanho_lote=tamanho_lote,
+        ):
             lote_num += 1
             lote_tam = len(lote)
             paginas_totais = paginas
@@ -194,13 +261,12 @@ def executar_importacao(filtros: dict, ids_importados: set, tamanho_lote: int = 
     status_text.empty()
     debug_text.empty()
 
-    # Se nada foi importado, mostra razão explícita
     if total_importado == 0 and not erros:
         st.warning(
-            f"⚠️ O iterador rodou mas não emitiu nenhum lote. "
-            f"Páginas consultadas na API: {paginas_totais}. "
-            f"Isso significa que TODOS os registros retornados pela API "
-            f"já estão no Supabase (set de {len(ids_importados):,} IDs).".replace(",", ".")
+            f"⚠️ Nenhum atendimento foi emitido pelo iterador. "
+            f"Páginas consultadas: {paginas_totais}. "
+            f"Todos os IDs retornados pela API já estão no Supabase "
+            f"(set de {len(ids_importados_norm):,} IDs).".replace(",", ".")
         )
 
     return total_importado, erros
@@ -342,8 +408,9 @@ except Exception as e:
     st.error(f"Erro ao consultar a API: {e}")
     st.stop()
 
-# Filtra da lista os já importados
-data = [row for row in data_api if row.get("id") not in ids_importados]
+# Filtra da lista os já importados (normaliza ID para int)
+_ids_norm = {int(x) for x in ids_importados if x is not None}
+data = [row for row in data_api if int(row.get("id")) not in _ids_norm]
 
 total_api  = meta.get("total", len(data_api))
 from_n     = meta.get("from", 1)
