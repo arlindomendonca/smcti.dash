@@ -168,7 +168,7 @@ with st.expander("🔍 Filtros", expanded=True):
         f_end_ini = st.date_input("Fim — de",  value=None, format="DD/MM/YYYY")
         f_end_fin = st.date_input("Fim — até", value=None, format="DD/MM/YYYY")
 
-    fc1, fc2, _, _, fbtn_clear, fbtn_int = st.columns([2, 2, 1, 1, 1, 1.4])
+    fc1, fc2, _, fbtn_clear, fbtn_int = st.columns([2, 2, 2, 1, 1.4])
     with fc1:
         f_order = st.selectbox("Ordenar por", ["created_at"], label_visibility="collapsed")
     with fc2:
@@ -178,7 +178,7 @@ with st.expander("🔍 Filtros", expanded=True):
             label_visibility="collapsed",
         )
     with fbtn_clear:
-        if st.button("🔄 Limpar", use_container_width=True):
+        if st.button("🔄 Limpar filtros", use_container_width=True):
             st.session_state.page = 1
             st.rerun()
     with fbtn_int:
