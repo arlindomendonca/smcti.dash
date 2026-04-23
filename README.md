@@ -1,55 +1,54 @@
 # Plataforma de Atendimentos — Rio Verde GO
 
-Aplicação Streamlit para consulta e análise dos atendimentos da plataforma gove.digital.
+Aplicação Streamlit para consulta e importação dos atendimentos da plataforma gove.digital para o Supabase.
 
 ## Estrutura
 
 ```
 .
-├── app.py                        # Página principal (listagem + mensagens)
+├── app.py                        # Página principal
 ├── api_client.py                 # Wrapper da API gove.digital
+├── supabase_client.py            # Integração com o Supabase (upsert idempotente)
 ├── requirements.txt
 ├── .gitignore
 └── .streamlit/
-    ├── config.toml               # Tema e configurações
-    └── secrets.toml.example      # Modelo de secrets (não commitar o real)
+    ├── config.toml
+    └── secrets.toml.example      # Modelo — NÃO commitar o arquivo real
 ```
 
 ## Configuração local
 
 ```bash
-# 1. Clone o repositório
 git clone https://github.com/seu-usuario/atendimentos.git
 cd atendimentos
-
-# 2. Instale as dependências
 pip install -r requirements.txt
-
-# 3. Configure os secrets
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-# Edite .streamlit/secrets.toml e preencha o token da API
-
-# 4. Rode localmente
+# Edite secrets.toml com seus tokens
 streamlit run app.py
 ```
 
 ## Deploy no Streamlit Cloud
 
 1. Suba o repositório no GitHub (sem o `secrets.toml`).
-2. Acesse [share.streamlit.io](https://share.streamlit.io) e conecte o repositório.
-3. Em **Settings → Secrets**, cole o conteúdo abaixo (ajuste o token):
+2. Em [share.streamlit.io](https://share.streamlit.io), conecte o repositório.
+3. Em **Settings → Secrets**, cole:
 
 ```toml
 [api]
 base_url = "https://api.gove.digital/v2"
 token = "SEU_TOKEN_AQUI"
+
+[supabase]
+url = "https://xxxxxxxxxxxx.supabase.co"
+service_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 ```
 
-4. Clique em **Deploy**.
+> Use a **service_role key** do Supabase (Project Settings → API), não a anon key.
 
-## Funcionalidades
+## Como funciona a importação
 
-- Listagem paginada de atendimentos (25 por página)
-- Filtros: ID, destinatário, UUID do atendente, datas de início e fim, ordenação
-- Painel lateral com histórico de mensagens de cada atendimento
-- Mensagens diferenciadas por direção (cidadão / atendente)
+- A lista exibe apenas atendimentos **ainda não importados** no Supabase.
+- O botão **⬆️ Integrar** percorre **todas as páginas** da API com os filtros ativos.
+- Para cada atendimento novo: faz upsert de departamento → atendente → atendimento → mensagens.
+- Upserts são **idempotentes** (chave `uuid` / `id`): rodar duas vezes não duplica dados.
+- Após importação, os registros somem da lista automaticamente.
